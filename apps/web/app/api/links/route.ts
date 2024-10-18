@@ -7,120 +7,123 @@ import { withWorkspace } from "@/lib/auth";
 import { ratelimit } from "@/lib/upstash";
 import { sendWorkspaceWebhook } from "@/lib/webhook/publish";
 import {
-  createLinkBodySchema,
-  getLinksQuerySchemaExtended,
-  linkEventSchema,
+    createLinkBodySchema,
+    getLinksQuerySchemaExtended,
+    linkEventSchema,
 } from "@/lib/zod/schemas/links";
 import { LOCALHOST_IP, getSearchParamsWithArray } from "@dub/utils";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 
-// GET /api/links – get all links for a workspace
+var RATE_LIMIT = 10;
+var RATE_LIMIT_WINDOW = "1 d";
+
+// GET /api/links – get all links for a workspace
 export const GET = withWorkspace(
-  async ({ req, headers, workspace }) => {
-    const searchParams = getSearchParamsWithArray(req.url);
+    async ({ req, headers, workspace }) => {
+        let searchParams = getSearchParamsWithArray(req.url);
 
-    const {
-      domain,
-      tagId,
-      tagIds,
-      search,
-      sort,
-      page,
-      pageSize,
-      userId,
-      showArchived,
-      withTags,
-      includeUser,
-      linkIds,
-    } = getLinksQuerySchemaExtended.parse(searchParams);
+        let {
+            domain,
+            tagId,
+            tagIds,
+            search,
+            sort,
+            page,
+            pageSize,
+            userId,
+            showArchived,
+            withTags,
+            includeUser,
+            linkIds,
+        } = getLinksQuerySchemaExtended.parse(searchParams);
 
-    if (domain) {
-      await getDomainOrThrow({ workspace, domain });
-    }
+        if (domain) {
+            await getDomainOrThrow({ workspace, domain });
+        }
 
-    const response = await getLinksForWorkspace({
-      workspaceId: workspace.id,
-      domain,
-      tagId,
-      tagIds,
-      search,
-      sort,
-      page,
-      pageSize,
-      userId,
-      showArchived,
-      withTags,
-      includeUser,
-      linkIds,
-    });
+        let response = await getLinksForWorkspace({
+            workspaceId: workspace.id,
+            domain,
+            tagId,
+            tagIds,
+            search,
+            sort,
+            page,
+            pageSize,
+            userId,
+            showArchived,
+            withTags,
+            includeUser,
+            linkIds,
+        });
 
-    return NextResponse.json(response, {
-      headers,
-    });
-  },
-  {
-    requiredPermissions: ["links.read"],
-  },
+        return NextResponse.json(response, {
+            headers,
+        });
+    },
+    {
+        requiredPermissions: ["links.read"],
+    },
 );
 
-// POST /api/links – create a new link
+// POST /api/links – create a new link
 export const POST = withWorkspace(
-  async ({ req, headers, session, workspace }) => {
-    if (workspace) {
-      throwIfLinksUsageExceeded(workspace);
-    }
+    async ({ req, headers, session, workspace }) => {
+        if (workspace) {
+            throwIfLinksUsageExceeded(workspace);
+        }
 
-    const body = createLinkBodySchema.parse(await parseRequestBody(req));
+        let body = createLinkBodySchema.parse(await parseRequestBody(req));
 
-    if (!session) {
-      const ip = req.headers.get("x-forwarded-for") || LOCALHOST_IP;
-      const { success } = await ratelimit(10, "1 d").limit(ip);
+        if (!session) {
+            let ip = req.headers.get("x-forwarded-for") || LOCALHOST_IP;
+            let { success } = await ratelimit(RATE_LIMIT, RATE_LIMIT_WINDOW).limit(ip);
 
-      if (!success) {
-        throw new DubApiError({
-          code: "rate_limit_exceeded",
-          message:
-            "Rate limited – you can only create up to 10 links per day without an account.",
-        });
-      }
-    }
+            if (!success) {
+                throw new DubApiError({
+                    code: "rate_limit_exceeded",
+                    message:
+                        "Rate limited – you can only create up to 10 links per day without an account.",
+                });
+            }
+        }
 
-    const { link, error, code } = await processLink({
-      payload: body,
-      workspace,
-      ...(session && { userId: session.user.id }),
-    });
-
-    if (error != null) {
-      throw new DubApiError({
-        code: code as ErrorCodes,
-        message: error,
-      });
-    }
-
-    try {
-      const response = await createLink(link);
-
-      if (response.projectId && response.userId) {
-        waitUntil(
-          sendWorkspaceWebhook({
-            trigger: "link.created",
+        let { link, error, code } = await processLink({
+            payload: body,
             workspace,
-            data: linkEventSchema.parse(response),
-          }),
-        );
-      }
+            ...(session && { userId: session.user.id }),
+        });
 
-      return NextResponse.json(response, { headers });
-    } catch (error) {
-      throw new DubApiError({
-        code: "unprocessable_entity",
-        message: error.message,
-      });
-    }
-  },
-  {
-    requiredPermissions: ["links.write"],
-  },
+        if (error != null) {
+            throw new DubApiError({
+                code: code as ErrorCodes,
+                message: error,
+            });
+        }
+
+        try {
+            let response = await createLink(link);
+
+            if (response.projectId && response.userId) {
+                waitUntil(
+                    sendWorkspaceWebhook({
+                        trigger: "link.created",
+                        workspace,
+                        data: linkEventSchema.parse(response),
+                    }),
+                );
+            }
+
+            return NextResponse.json(response, { headers });
+        } catch (error) {
+            throw new DubApiError({
+                code: "unprocessable_entity",
+                message: error.message,
+            });
+        }
+    },
+    {
+        requiredPermissions: ["links.write"],
+    },
 );
